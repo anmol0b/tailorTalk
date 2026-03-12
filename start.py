@@ -9,7 +9,32 @@ import sys
 import time
 import os
 import signal
-from pathlib import Path
+
+
+def _load_local_env():
+    """Lightweight .env loader to avoid hard dependency at startup."""
+    if not os.path.exists(".env"):
+        return
+
+    with open(".env", "r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_local_env()
+
+BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
+BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
+FRONTEND_HOST = os.getenv("FRONTEND_HOST", "0.0.0.0")
+FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "8501"))
+SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
 
 def check_dependencies():
     """Check if required dependencies are installed"""
@@ -31,13 +56,16 @@ def check_env_file():
         print("⚠️  .env file not found")
         print("Please create a .env file with your GROQ_API_KEY")
         return False
+    if not os.getenv("GROQ_API_KEY"):
+        print("⚠️  GROQ_API_KEY is not set in environment")
+        print("Please add GROQ_API_KEY to your .env file")
+        return False
     return True
 
 def check_service_account():
     """Check if service account file exists"""
-    service_account_file = "assignments-464701-418734497e1c.json"
-    if not os.path.exists(service_account_file):
-        print(f"⚠️  {service_account_file} not found")
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        print(f"⚠️  {SERVICE_ACCOUNT_FILE} not found")
         print("Please ensure your Google service account JSON file is in the root directory")
         return False
     return True
@@ -49,16 +77,14 @@ def start_backend():
         sys.executable, "-m", "uvicorn", 
         "app.main:app", 
         "--reload", 
-        "--host", "0.0.0.0", 
-        "--port", "8000"
+        "--host", BACKEND_HOST, 
+        "--port", str(BACKEND_PORT)
     ]
     
     try:
         backend_process = subprocess.Popen(
             backend_cmd,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            cwd=os.getcwd()
         )
         print("✅ Backend started successfully")
         return backend_process
@@ -72,16 +98,14 @@ def start_frontend():
     frontend_cmd = [
         sys.executable, "-m", "streamlit", 
         "run", "streamlitApp/app.py",
-        "--server.port", "8501",
-        "--server.address", "0.0.0.0"
+        "--server.port", str(FRONTEND_PORT),
+        "--server.address", FRONTEND_HOST
     ]
     
     try:
         frontend_process = subprocess.Popen(
             frontend_cmd,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            cwd=os.getcwd()
         )
         print("✅ Frontend started successfully")
         return frontend_process
@@ -95,7 +119,7 @@ def wait_for_backend():
     max_attempts = 30
     for i in range(max_attempts):
         try:
-            response = requests.get("http://localhost:8000/health", timeout=2)
+            response = requests.get(f"http://localhost:{BACKEND_PORT}/health", timeout=2)
             if response.status_code == 200:
                 print("✅ Backend is ready!")
                 return True
@@ -113,9 +137,9 @@ def print_startup_info():
     print("\n" + "="*60)
     print("🧵 TailorTalk - AI Calendar Assistant")
     print("="*60)
-    print("📱 Frontend: http://localhost:8501")
-    print("🔧 Backend:  http://localhost:8000")
-    print("📚 API Docs: http://localhost:8000/docs")
+    print(f"📱 Frontend: http://localhost:{FRONTEND_PORT}")
+    print(f"🔧 Backend:  http://localhost:{BACKEND_PORT}")
+    print(f"📚 API Docs: http://localhost:{BACKEND_PORT}/docs")
     print("="*60)
     print("💡 Try these example commands:")
     print("   • Book a meeting tomorrow at 3 PM")
@@ -144,11 +168,11 @@ def main():
     
     # Check environment
     if not check_env_file():
-        print("Continuing anyway...")
+        print("Continuing with limited functionality...")
     
     # Check service account
     if not check_service_account():
-        print("Continuing anyway...")
+        print("Continuing with calendar features disabled...")
     
     print("\n🚀 Starting TailorTalk services...")
     

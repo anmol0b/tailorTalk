@@ -1,3 +1,9 @@
 .env
 assignments-464701-418734497e1c.json
-
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.pycache_tmp/

@@ -1,3 +1,4 @@
+import os
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -13,14 +14,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-SERVICE_ACCOUNT_FILE = 'assignments-464701-418734497e1c.json'
-CALENDAR_ID = 'assignment@assignments-464701.iam.gserviceaccount.com'  # Replace with your real/test calendar ID
+SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
+CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Kolkata")
 
 # Initialize Google Calendar service
 try:
     credentials = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES
     )
+    if not CALENDAR_ID:
+        CALENDAR_ID = credentials.service_account_email
     service = build('calendar', 'v3', credentials=credentials)
     logger.info("✅ Google Calendar service initialized successfully")
 except Exception as e:
@@ -73,11 +77,11 @@ def book_event(summary: str, start_time: datetime, end_time: datetime, descripti
             'summary': summary,
             'start': {
                 'dateTime': start_time.isoformat(), 
-                'timeZone': 'Asia/Kolkata'
+                'timeZone': APP_TIMEZONE
             },
             'end': {
                 'dateTime': end_time.isoformat(), 
-                'timeZone': 'Asia/Kolkata'
+                'timeZone': APP_TIMEZONE
             }
         }
         
@@ -201,7 +205,7 @@ def book_event_from_text(user_input: str) -> str:
         
         if result.get('success'):
             # Format response with local time
-            local_tz = pytz.timezone("Asia/Kolkata")
+            local_tz = pytz.timezone(APP_TIMEZONE)
             local_start = start_time.astimezone(local_tz).strftime('%A, %B %d at %I:%M %p')
             local_end = end_time.astimezone(local_tz).strftime('%I:%M %p')
             
@@ -341,7 +345,7 @@ def parse_meeting_details(user_input: str) -> Optional[Dict[str, Any]]:
                 break
         
         # Create datetime objects
-        local_tz = pytz.timezone("Asia/Kolkata")
+        local_tz = pytz.timezone(APP_TIMEZONE)
         start_time = local_tz.localize(datetime.combine(event_date.date(), datetime.strptime(event_time, '%H:%M').time()))
         end_time = start_time + duration
         

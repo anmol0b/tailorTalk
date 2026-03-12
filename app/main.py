@@ -1,275 +1,152 @@
-# FastAPI backend for meeting booking bot
-from typing import List, Tuple, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, EmailStr, validator
-import re
-from datetime import datetime, timedelta
+from typing import List, Tuple, Dict, Any
+from fastapi import FastAPI
+from pydantic import BaseModel
+from datetime import datetime
 import logging
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="TailorTalk API",
-    description="AI-powered calendar booking assistant",
-    version="1.0.0"
-)
+app = FastAPI(title="TailorTalk API", version="1.0.0")
 
-class MeetingDetails(BaseModel):
-    date: str
-    time: str
-    participants: List[EmailStr]
-    agenda: Optional[str] = None
-    duration: Optional[int] = 30  # Default 30 minutes
-    
-    @validator('date')
-    def validate_date(cls, v):
-        try:
-            datetime.strptime(v, '%Y-%m-%d')
-            return v
-        except ValueError:
-            raise ValueError('Date must be in YYYY-MM-DD format')
-    
-    @validator('time')
-    def validate_time(cls, v):
-        try:
-            datetime.strptime(v, '%H:%M')
-            return v
-        except ValueError:
-            raise ValueError('Time must be in HH:MM format (24-hour)')
+# ── Calendar utilities ────────────────────────────────────────────────────────
+try:
+    from app.calendarUtils import book_event_from_text, get_upcoming_events, get_calendar_info
+    CALENDAR_AVAILABLE = True
+    logger.info("✅ calendarUtils loaded")
+except Exception as e:
+    CALENDAR_AVAILABLE = False
+    logger.error(f"❌ calendarUtils failed: {e}")
+
+# ── Agent (optional fallback) ─────────────────────────────────────────────────
+try:
+    from app.agent import agent_executor, get_agent_status
+    AGENT_AVAILABLE = agent_executor is not None
+    logger.info("✅ Agent loaded")
+except Exception as e:
+    AGENT_AVAILABLE = False
+    logger.error(f"❌ Agent failed: {e}")
+
 
 class ChatInput(BaseModel):
     user_input: str
     chat_history: List[Tuple[str, str]] = []
 
-class MeetingResponse(BaseModel):
-    message: str
-    details: Optional[MeetingDetails] = None
-    success: bool = True
-    error_code: Optional[str] = None
 
-def extract_meeting_details(user_input: str) -> Optional[MeetingDetails]:
-    """Enhanced meeting details extraction with better parsing"""
-    try:
-        # Date patterns: YYYY-MM-DD, tomorrow, next week, etc.
-        date_patterns = [
-            r'\b(\d{4}-\d{2}-\d{2})\b',  # YYYY-MM-DD
-            r'\b(tomorrow)\b',
-            r'\b(next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b',
-            r'\b(in\s+\d+\s+days?)\b'
-        ]
-        
-        # Time patterns: HH:MM, 3 PM, 15:30, etc.
-        time_patterns = [
-            r'\b(\d{1,2}:\d{2})\b',  # HH:MM
-            r'\b(\d{1,2}\s*(am|pm))\b',  # 3 PM, 3pm
-            r'\b(\d{1,2}:\d{2}\s*(am|pm))\b'  # 3:30 PM
-        ]
-        
-        # Duration patterns
-        duration_patterns = [
-            r'\b(\d+)\s*(minute|min|hour|hr)s?\b',
-            r'\bfor\s+(\d+)\s*(minute|min|hour|hr)s?\b'
-        ]
-        
-        # Extract date
-        date_match = None
-        for pattern in date_patterns:
-            date_match = re.search(pattern, user_input.lower())
-            if date_match:
-                break
-        
-        # Extract time
-        time_match = None
-        for pattern in time_patterns:
-            time_match = re.search(pattern, user_input.lower())
-            if time_match:
-                break
-        
-        # Extract participants (email addresses)
-        participants_match = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', user_input)
-        
-        # Extract agenda
-        agenda_patterns = [
-            r'agenda[:\-]?\s*(.*?)(?=\s+(?:with|for|on|at)|$)',
-            r'about\s+(.*?)(?=\s+(?:with|for|on|at)|$)',
-            r'titled\s+[\'"](.*?)[\'"]',
-            r'meeting\s+(?:about|regarding)\s+(.*?)(?=\s+(?:with|for|on|at)|$)'
-        ]
-        
-        agenda_match = None
-        for pattern in agenda_patterns:
-            agenda_match = re.search(pattern, user_input, re.IGNORECASE)
-            if agenda_match:
-                break
-        
-        # Extract duration
-        duration_match = None
-        for pattern in duration_patterns:
-            duration_match = re.search(pattern, user_input.lower())
-            if duration_match:
-                break
-        
-        # Process extracted data
-        if date_match and time_match and participants_match:
-            # Convert relative dates to absolute dates
-            date_str = date_match.group(1)
-            if date_str == 'tomorrow':
-                date_str = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-            elif date_str.startswith('next '):
-                # Handle "next monday" etc.
-                day_name = date_str.split()[1]
-                days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-                target_day = days.index(day_name)
-                current_day = datetime.now().weekday()
-                days_ahead = (target_day - current_day + 7) % 7
-                if days_ahead == 0:
-                    days_ahead = 7
-                date_str = (datetime.now() + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
-            
-            # Process time
-            time_str = time_match.group(1)
-            if 'pm' in time_str.lower() and not time_str.startswith('12'):
-                # Convert 12-hour to 24-hour format
-                time_parts = re.findall(r'(\d{1,2}):?(\d{2})?', time_str)
-                if time_parts:
-                    hour = int(time_parts[0][0])
-                    minute = int(time_parts[0][1]) if time_parts[0][1] else 0
-                    hour = hour + 12 if hour < 12 else hour
-                    time_str = f"{hour:02d}:{minute:02d}"
-            
-            # Process duration
-            duration = 30  # default
-            if duration_match:
-                value = int(duration_match.group(1))
-                unit = duration_match.group(2)
-                if 'hour' in unit or 'hr' in unit:
-                    duration = value * 60
-                else:
-                    duration = value
-            
-            return MeetingDetails(
-                date=date_str,
-                time=time_str,
-                participants=participants_match,
-                agenda=agenda_match.group(1).strip() if agenda_match else None,
-                duration=duration
-            )
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error extracting meeting details: {e}")
-        return None
+def detect_intent(text: str) -> str:
+    t = text.lower()
+    if any(w in t for w in ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening']):
+        return "greet"
+    if any(w in t for w in ['help', 'what can you do', 'capabilities', 'commands']):
+        return "help"
+    if any(w in t for w in ['cancel', 'delete', 'remove']):
+        return "cancel"
+    if any(w in t for w in ['show', 'list', 'upcoming', 'what meetings', 'my schedule', 'my calendar', 'my meetings', 'do i have']):
+        return "view"
+    if any(w in t for w in ['book', 'schedule', 'arrange', 'set up', 'create', 'add']) and \
+       any(w in t for w in ['meeting', 'appointment', 'call', 'session', 'event']):
+        return "book"
+    return "agent"
 
-@app.post("/book_meeting", response_model=MeetingResponse)
-async def book_meeting_endpoint(payload: ChatInput):
-    """Enhanced meeting booking endpoint with better validation"""
-    try:
-        details = extract_meeting_details(payload.user_input)
-        if not details:
-            return MeetingResponse(
-                message="❌ Missing or invalid meeting details. Please provide:\n• Date (YYYY-MM-DD, tomorrow, next monday)\n• Time (HH:MM or 3 PM)\n• Participant emails\n• Optional: agenda and duration",
-                success=False,
-                error_code="INVALID_DETAILS"
-            )
-        
-        # Validate date is not in the past
-        meeting_datetime = datetime.strptime(f"{details.date} {details.time}", "%Y-%m-%d %H:%M")
-        if meeting_datetime < datetime.now():
-            return MeetingResponse(
-                message="❌ Cannot book meetings in the past",
-                success=False,
-                error_code="PAST_DATE"
-            )
-        
-        # Here you would integrate with a real calendar API
-        message = f"✅ Meeting booked successfully!\n\n📅 Date: {details.date}\n🕐 Time: {details.time}\n👥 Participants: {', '.join(details.participants)}\n⏱️ Duration: {details.duration} minutes"
-        
-        if details.agenda:
-            message += f"\n📋 Agenda: {details.agenda}"
-        
-        return MeetingResponse(message=message, details=details)
-        
-    except Exception as e:
-        logger.error(f"Error in book_meeting_endpoint: {e}")
-        return MeetingResponse(
-            message=f"❌ An error occurred while booking the meeting: {str(e)}",
-            success=False,
-            error_code="INTERNAL_ERROR"
-        )
+
+def format_events(events: list) -> str:
+    if not events:
+        return "📭 No upcoming events found on your calendar."
+    lines = ["📅 **Your upcoming events:**\n"]
+    for ev in events:
+        dt_str = ev.get('start', {}).get('dateTime') or ev.get('start', {}).get('date', '')
+        try:
+            dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+            formatted = dt.strftime('%A, %b %d at %I:%M %p')
+        except Exception:
+            formatted = dt_str
+        title = ev.get('summary', 'Untitled')
+        attendees = ev.get('attendees', [])
+        link = ev.get('htmlLink', '')
+        lines.append(f"**{title}**  🕐 {formatted}")
+        if attendees:
+            lines.append(f"  👥 {', '.join(a['email'] for a in attendees)}")
+        if link:
+            lines.append(f"  🔗 [Open in Calendar]({link})")
+        lines.append("")
+    return '\n'.join(lines)
+
 
 @app.post("/chat")
 async def chat(payload: ChatInput):
-    """Enhanced chat endpoint with better error handling"""
-    try:
-        user_input = payload.user_input.lower().strip()
-        
-        # Check for meeting booking intent
-        booking_keywords = ['book', 'schedule', 'arrange', 'set up', 'create']
-        meeting_keywords = ['meeting', 'appointment', 'call', 'session']
-        
-        is_booking_request = any(keyword in user_input for keyword in booking_keywords) and \
-                           any(keyword in user_input for keyword in meeting_keywords)
-        
-        if is_booking_request:
-            details = extract_meeting_details(payload.user_input)
-            if not details:
-                return {
-                    "response": "I'd be happy to help you book a meeting! Please provide:\n\n• **Date**: When would you like to meet? (e.g., tomorrow, 2025-01-15, next monday)\n• **Time**: What time works for you? (e.g., 3 PM, 15:30)\n• **Participants**: Who should be invited? (email addresses)\n• **Optional**: Meeting agenda and duration"
-                }
-            
-            # Validate the meeting details
-            meeting_datetime = datetime.strptime(f"{details.date} {details.time}", "%Y-%m-%d %H:%M")
-            if meeting_datetime < datetime.now():
-                return {"response": "❌ I can't book meetings in the past. Please choose a future date and time."}
-            
-            message = f"✅ Meeting booked successfully!\n\n📅 **Date**: {details.date}\n🕐 **Time**: {details.time}\n👥 **Participants**: {', '.join(details.participants)}\n⏱️ **Duration**: {details.duration} minutes"
-            
-            if details.agenda:
-                message += f"\n📋 **Agenda**: {details.agenda}"
-            
-            return {"response": message}
-        
-        # Handle other conversation with the agent
+    user_input = payload.user_input.strip()
+    intent = detect_intent(user_input)
+    logger.info(f"Intent={intent} | '{user_input}'")
+
+    if intent == "greet":
+        return {"response": (
+            "👋 Hey! I'm TailorTalk — your AI calendar assistant.\n\n"
+            "Try: *\"Book a 30-min call tomorrow at 3 PM with john@example.com about onboarding\"*"
+        )}
+
+    if intent == "help":
+        return {"response": (
+            "🤖 **What I can do:**\n\n"
+            "📅 **Book** → *\"Book a 1-hour call next Monday at 2 PM with team@company.com\"*\n"
+            "📋 **View** → *\"Show my upcoming meetings\"*\n"
+            "❌ **Cancel** → *\"Cancel my 3 PM meeting tomorrow\"* *(coming soon)*"
+        )}
+
+    if intent == "view":
+        if not CALENDAR_AVAILABLE:
+            return {"response": "⚠️ Calendar unavailable — check `GOOGLE_SERVICE_ACCOUNT_FILE` and `GOOGLE_CALENDAR_ID` in `.env`"}
+        return {"response": format_events(get_upcoming_events(max_results=8))}
+
+    if intent == "book":
+        if not CALENDAR_AVAILABLE:
+            return {"response": "⚠️ Calendar unavailable — check your `.env` settings"}
+        # ✅ Real booking — hits Google Calendar API via calendarUtils
+        result = book_event_from_text(user_input)
+        if "Couldn't parse" in result:
+            return {"response": (
+                "I need a bit more info:\n\n"
+                "• **Date** — *tomorrow / next Monday / 2025-06-15*\n"
+                "• **Time** — *3 PM / 14:30*\n"
+                "• **Email** — *john@example.com*\n"
+                "• **Duration** *(optional)* — default 30 min\n"
+                "• **Topic** *(optional)*\n\n"
+                "Example: *\"Book a 30-min call tomorrow at 3 PM with john@example.com about design review\"*"
+            )}
+        return {"response": result}
+
+    if intent == "cancel":
+        return {"response": "To cancel, tell me the **meeting title + date**. *(Full cancel support coming soon)*"}
+
+    # ── Fallback: LangChain agent ─────────────────────────────────────────────
+    if AGENT_AVAILABLE:
         try:
-            from app.agent import agent_executor
-            reply = agent_executor.invoke({
-                "input": payload.user_input,
-                "chat_history": payload.chat_history
-            })
-            
+            history = [("human" if r == "user" else "assistant", c) for r, c in payload.chat_history]
+            reply = agent_executor.invoke({"input": user_input, "chat_history": history})
             if isinstance(reply, dict):
                 reply = reply.get("output") or reply.get("response") or str(reply)
-            
-            return {"response": reply}
-            
-        except ImportError:
-            return {"response": "I'm here to help you book meetings! Just let me know when you'd like to schedule something."}
+            return {"response": reply.strip()}
         except Exception as e:
-            logger.error(f"Agent execution error: {e}")
-            return {"response": f"I encountered an issue processing your request. Please try again or rephrase your message."}
-            
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {e}")
-        return {"response": "I'm having trouble processing your request right now. Please try again in a moment."}
+            logger.error(f"Agent error: {e}")
+
+    return {"response": "Not sure how to help — try *\"book a meeting\"* or *\"show my schedule\"*"}
+
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    info: Dict[str, Any] = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "calendar_available": CALENDAR_AVAILABLE,
+        "agent_available": AGENT_AVAILABLE,
+    }
+    if CALENDAR_AVAILABLE:
+        try: info["calendar"] = get_calendar_info()
+        except Exception: pass
+    if AGENT_AVAILABLE:
+        try: info["agent"] = get_agent_status()
+        except Exception: pass
+    return info
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
-    return {
-        "message": "Welcome to TailorTalk API",
-        "version": "1.0.0",
-        "endpoints": {
-            "/chat": "Chat with the AI assistant",
-            "/book_meeting": "Book a meeting directly",
-            "/health": "Health check",
-            "/docs": "API documentation"
-        }
-    }
+    return {"message": "TailorTalk API v1.0", "docs": "/docs"}

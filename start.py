@@ -30,9 +30,9 @@ def _load_local_env():
 
 _load_local_env()
 
-BACKEND_HOST = os.getenv("BACKEND_HOST", "0.0.0.0")
+BACKEND_HOST = os.getenv("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
-FRONTEND_HOST = os.getenv("FRONTEND_HOST", "0.0.0.0")
+FRONTEND_HOST = os.getenv("FRONTEND_HOST", "127.0.0.1")
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "8501"))
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service-account.json")
 
@@ -99,7 +99,8 @@ def start_frontend():
         sys.executable, "-m", "streamlit", 
         "run", "streamlitApp/app.py",
         "--server.port", str(FRONTEND_PORT),
-        "--server.address", FRONTEND_HOST
+        "--server.address", FRONTEND_HOST,
+        "--server.headless", "true"
     ]
     
     try:

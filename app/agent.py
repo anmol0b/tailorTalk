@@ -1,207 +1,144 @@
 import os
+import logging
 from dotenv import load_dotenv
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain_groq import ChatGroq
-from langchain.prompts import MessagesPlaceholder
-from langchain_core.prompts.chat import ChatPromptTemplate
-from app.calendarUtils import (
-    check_availability, 
-    book_event, 
-    book_event_from_text,
-    get_upcoming_events,
-    cancel_event,
-    get_calendar_info
-)
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
-from datetime import datetime, timedelta
-from pytz import timezone
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Initialize LLM
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ── Calendar imports ──────────────────────────────────────────────────────────
 try:
+    from app.calendarUtils import (
+        book_event_from_text,
+        get_upcoming_events,
+        cancel_event,
+        check_availability,
+    )
+    CALENDAR_OK = True
+except Exception as e:
+    CALENDAR_OK = False
+    logger.error(f"❌ calendarUtils import failed: {e}")
+
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+llm = None
+try:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not set in .env")
     llm = ChatGroq(
-        groq_api_key=os.getenv("GROQ_API_KEY"),
+        groq_api_key=api_key,
         model_name="meta-llama/llama-4-scout-17b-16e-instruct"
     )
-    logger.info("✅ LLM initialized successfully")
+    logger.info("✅ LLM initialised")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize LLM: {e}")
-    llm = None
+    logger.error(f"❌ LLM init failed: {e}")
 
-# Enhanced tools with better descriptions and error handling
+
+# ── Tools — every func now does real work ─────────────────────────────────────
+def _book(user_input: str) -> str:
+    """Parse natural language and book a real Google Calendar event."""
+    if not CALENDAR_OK:
+        return "❌ Calendar service unavailable."
+    return book_event_from_text(user_input)
+
+
+def _view_events(_: str) -> str:
+    """Return upcoming calendar events as formatted text."""
+    if not CALENDAR_OK:
+        return "❌ Calendar service unavailable."
+    events = get_upcoming_events(max_results=8)
+    if not events:
+        return "📭 No upcoming events found."
+    lines = []
+    for ev in events:
+        start = ev.get('start', {}).get('dateTime') or ev.get('start', {}).get('date', '')
+        lines.append(f"• {ev.get('summary','Untitled')} — {start}")
+    return "📅 Upcoming events:\n" + "\n".join(lines)
+
+
+def _cancel(event_id: str) -> str:
+    """Cancel an event by its Google Calendar event ID."""
+    if not CALENDAR_OK:
+        return "❌ Calendar service unavailable."
+    result = cancel_event(event_id.strip())
+    if result.get("success"):
+        return "✅ Event cancelled successfully."
+    return f"❌ Could not cancel: {result.get('error', 'unknown error')}"
+
+
 tools = [
     Tool(
-        name="BookEvent",
-        func=book_event_from_text,
+        name="BookMeeting",
+        func=_book,
         description=(
-            "Use this tool to book a Google Calendar meeting. "
-            "The user must provide ALL of the following in their message: "
-            "event name/title, date (YYYY-MM-DD, tomorrow, next monday), time (HH:MM or 3 PM), "
-            "and optionally duration (in minutes/hours) and participant emails. "
-            "Example: 'Book a meeting about project review tomorrow at 3 PM for 1 hour with john@example.com'"
-        )
-    ),
-    Tool(
-        name="CheckAvailability",
-        func=lambda x: "Use this to check if a specific time slot is available before booking",
-        description=(
-            "Check if a specific time slot is available in the calendar. "
-            "Use this before booking to avoid conflicts. "
-            "Provide date and time in the format: 'Check availability for 2025-01-15 14:00 to 15:00'"
+            "Book a Google Calendar meeting from natural language. "
+            "Input must include date, time, and at least one attendee email. "
+            "Example: 'Book a 30-minute meeting tomorrow at 3 PM with john@example.com about design review'"
         )
     ),
     Tool(
         name="GetUpcomingEvents",
-        func=lambda x: get_upcoming_events(5),
+        func=_view_events,
         description=(
-            "Get a list of upcoming events from the calendar. "
-            "Useful for showing users their scheduled meetings. "
-            "No input required - just call this tool to get recent events."
+            "Get a list of upcoming Google Calendar events. "
+            "Call this when the user asks to see their schedule, meetings, or calendar. "
+            "No specific input needed."
         )
     ),
     Tool(
         name="CancelEvent",
-        func=lambda x: "Use this to cancel an existing meeting. Provide the event ID or meeting details.",
+        func=_cancel,
         description=(
-            "Cancel an existing meeting or event. "
-            "You'll need the event ID or specific meeting details to cancel. "
-            "Use this when users want to cancel a previously booked meeting."
+            "Cancel an existing Google Calendar event by its event ID. "
+            "Input should be the event ID string."
         )
-    )
+    ),
 ]
 
-# Enhanced system prompt for better conversation flow
-system_prompt = """You are TailorTalk, an intelligent AI assistant that helps users book and manage meetings on Google Calendar.
+SYSTEM_PROMPT = """You are TailorTalk, a friendly AI assistant that manages Google Calendar bookings.
 
-Your capabilities:
-1. **Book Meetings**: You can book meetings with natural language input
-2. **Check Availability**: You can check if time slots are available
-3. **View Events**: You can show upcoming meetings
-4. **Cancel Events**: You can cancel existing meetings
-5. **General Help**: You can answer questions about calendar management
+You have three tools:
+- BookMeeting: books a real calendar event from natural language
+- GetUpcomingEvents: lists upcoming events
+- CancelEvent: cancels an event by ID
 
-Key Guidelines:
-- Always be helpful and conversational
-- Ask follow-up questions if meeting details are incomplete
-- Confirm details before booking to avoid errors
-- Provide clear, formatted responses with emojis for better readability
-- If a user wants to book a meeting, extract all necessary details and use the BookEvent tool
-- If a user asks about their schedule, use the GetUpcomingEvents tool
-- If a user wants to cancel a meeting, help them identify and cancel it
+Rules:
+- Always use tools for calendar actions — never fake a result
+- If booking details are incomplete, ask for what's missing before calling BookMeeting
+- Be concise and friendly
+- Format responses with emojis for readability
+- Always confirm what action you took"""
 
-Example interactions:
-- User: "I need to book a meeting tomorrow at 3 PM"
-- You: "I'd be happy to help! I'll need a few more details to book your meeting. What's the meeting about, and who should be invited? Also, how long should the meeting be?"
-
-- User: "Show me my upcoming meetings"
-- You: "Let me check your calendar for upcoming events..."
-
-Remember to be friendly, professional, and always confirm important details before taking actions."""
-
-# Create the agent with enhanced configuration
+# ── Agent ─────────────────────────────────────────────────────────────────────
+agent_executor = None
 try:
-    agent_executor = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
-        verbose=True,
-        handle_parsing_errors=True,
-        max_iterations=5,
-        early_stopping_method="generate"
-    )
-    logger.info("✅ Agent initialized successfully")
+    if llm:
+        agent_executor = initialize_agent(
+            tools=tools,
+            llm=llm,
+            agent=AgentType.CHAT_CONVERSATIONAL_REACT_DESCRIPTION,
+            verbose=True,
+            handle_parsing_errors=True,
+            max_iterations=5,
+            early_stopping_method="generate",
+            agent_kwargs={"system_message": SYSTEM_PROMPT},
+        )
+        logger.info("✅ Agent initialised")
+    else:
+        logger.warning("⚠️ Agent skipped — LLM not available")
 except Exception as e:
-    logger.error(f"❌ Failed to initialize agent: {e}")
-    agent_executor = None
+    logger.error(f"❌ Agent init failed: {e}")
 
-def process_user_input(user_input: str, chat_history: list = None) -> str:
-    """
-    Process user input with enhanced error handling and fallback responses
-    """
-    if not agent_executor:
-        return "I'm having trouble connecting to my AI services right now. Please try again later."
-    
-    try:
-        # Check for common patterns that don't need the full agent
-        user_lower = user_input.lower()
-        
-        # Greeting patterns
-        if any(word in user_lower for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-            return "👋 Hello! I'm TailorTalk, your AI calendar assistant. I can help you book meetings, check your schedule, and manage your calendar. What would you like to do today?"
-        
-        # Help patterns
-        if any(word in user_lower for word in ['help', 'what can you do', 'capabilities']):
-            return """🤖 **I can help you with:**
-
-📅 **Meeting Management**
-• Book new meetings with natural language
-• Check calendar availability
-• View upcoming events
-• Cancel existing meetings
-
-💬 **Natural Conversation**
-• Just tell me what you need in plain English
-• I'll ask for any missing details
-• I'll confirm everything before booking
-
-**Examples:**
-• "Book a meeting tomorrow at 3 PM about project review"
-• "Show me my upcoming meetings"
-• "I need to cancel my meeting with John"
-
-What would you like to do?"""
-        
-        # Use the agent for more complex requests
-        if chat_history:
-            # Convert chat history to the format expected by the agent
-            formatted_history = []
-            for role, content in chat_history:
-                if role == "user":
-                    formatted_history.append(("human", content))
-                else:
-                    formatted_history.append(("assistant", content))
-            
-            result = agent_executor.invoke({
-                "input": user_input,
-                "chat_history": formatted_history
-            })
-        else:
-            result = agent_executor.invoke({
-                "input": user_input,
-                "chat_history": []
-            })
-        
-        # Extract response from result
-        if isinstance(result, dict):
-            response = result.get("output") or result.get("response") or str(result)
-        else:
-            response = str(result)
-        
-        # Clean up the response
-        response = response.strip()
-        if not response:
-            response = "I'm not sure how to help with that. Could you please rephrase your request?"
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error processing user input: {e}")
-        return f"I encountered an issue processing your request. Please try again or rephrase your message. Error: {str(e)}"
 
 def get_agent_status() -> dict:
-    """
-    Get the current status of the agent and its components
-    """
     return {
         "llm_available": llm is not None,
         "agent_available": agent_executor is not None,
-        "tools_count": len(tools),
-        "model_name": "meta-llama/llama-4-scout-17b-16e-instruct" if llm else None
+        "calendar_available": CALENDAR_OK,
+        "tools": [t.name for t in tools],
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct" if llm else None,
     }

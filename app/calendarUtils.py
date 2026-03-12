@@ -89,16 +89,16 @@ def book_event(summary: str, start_time: datetime, end_time: datetime, descripti
         if description:
             event['description'] = description
         
-        # Add attendees if provided
+        # Store attendees in description instead
         if attendees:
-            event['attendees'] = [{'email': email} for email in attendees]
-        
+            attendee_str = ', '.join(attendees)
+            event['description'] = (event.get('description') or '') + f'\n\nInvitees: {attendee_str}'
+
         # Insert the event
         created_event = service.events().insert(
-            calendarId=CALENDAR_ID, 
+            calendarId=CALENDAR_ID,
             body=event,
-            sendUpdates='all'  # Send email notifications to attendees
-        ).execute()
+            ).execute()
         
         logger.info(f"✅ Event created successfully: {created_event.get('htmlLink')}")
         

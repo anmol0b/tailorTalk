@@ -145,15 +145,40 @@ curl -X POST http://localhost:8000/chat \
 
 ```
 tailorTalk/
-├── app/
-│   ├── main.py           # FastAPI routes + intent detection
-│   ├── agent.py          # LangChain agent + Groq LLM
-│   └── calendarUtils.py  # Google Calendar API wrapper
-├── streamlitApp/
-│   └── app.py            # Streamlit chat UI
-├── start.py              # Launches both services
+├── app
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-310.pyc
+│   │   ├── agent.cpython-310.pyc
+│   │   ├── calendarUtils.cpython-310.pyc
+│   │   └── main.cpython-310.pyc
+│   ├── core
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   └── config.py
+│   ├── main.py
+│   ├── models
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   └── schemas.py
+│   ├── routers
+│   │   ├── __init__.py
+│   │   ├── __pycache__
+│   │   └── chat.py
+│   └── services
+│       ├── __init__.py
+│       ├── __pycache__
+│       ├── agent_service.py
+│       ├── booking.py
+│       └── calendar_service.py
+├── public
+│   └── tailortalk architecture.png
+├── README.md
+├── .env.example
 ├── requirements.txt
-└── .env.example
+├── start.py
+└── streamlitApp
+    └── app.py
 ```
 
 ---

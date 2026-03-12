@@ -20,21 +20,7 @@ TailorTalk parses the intent, checks availability, and creates a real event on y
 
 ## Architecture
 
-```
-Streamlit Chat UI
-      │  HTTP
-      ▼
-FastAPI Backend  ──► Intent Detection
-      │                    │
-      │         ┌──────────┴──────────┐
-      │       book       view       agent
-      │         │          │          │
-      └─────────┴──────────┘          │
-                │                LangChain
-         calendarUtils           + Groq LLM
-                │
-        Google Calendar API
-```
+![TailorTalk Architecture](public/tailortalk%20architecture.png)
 
 **Stack:**
 - **Frontend** — Streamlit (`streamlitApp/app.py`)
